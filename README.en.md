@@ -98,6 +98,8 @@ by default — set them under **Settings ▸ Configure Krita… ▸ Keyboard Sho
 - Style (colour, width, opacity, dash) and the type's parameters are in the
   docker and apply immediately. Line width is given in screen pixels, so it does
   not change with zoom.
+- **↺** next to a parameter restores its default; **Reset parameters** resets all
+  parameters of the selected grid (style and position are left alone).
 - Everything is stored **inside the `.kra`**: a saved file opens with the same
   grid list, selection and transforms.
 
@@ -118,7 +120,7 @@ by default — set them under **Settings ▸ Configure Krita… ▸ Keyboard Sho
 | **Golden Triangles** | a diagonal plus the perpendiculars from the two vertices that are not on it |
 | **Diagonal Method** | diagonals out of all four corners plus 45° rays from the midpoints of the long sides |
 | **Dynamic Symmetry** | a root rectangle √2/√3/√5, its sides, diagonals and Hambidge reciprocals |
-| **Perspective** | one vanishing point, rays over half a turn through it, and the horizon |
+| **Perspective** | one vanishing point, rays to equal divisions of all four edges (like a floor/wall grid), and the horizon |
 
 ## Building from source
 

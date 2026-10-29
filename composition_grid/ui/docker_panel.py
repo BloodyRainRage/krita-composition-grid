@@ -14,6 +14,14 @@ Responsibilities (docker scope, v1):
   change routes ``GridStateService.set_type`` and the dynamic params section
   REBUILDS from the new schema via
   :func:`composition_grid.ui.param_widgets.build_param_widgets`.
+* Param reset: every param row built by ``param_widgets`` carries a small "↺"
+  button, enabled exactly while that parameter differs from the grid type's
+  schema default and routed through ``GridStateService.reset_param``; the
+  Parameters group ends with a "Reset parameters" button (``reset_params``)
+  enabled while ANY parameter differs. Both are ordinary value changes, so the
+  persistence subscriber saves them like any other edit. Style, transform and
+  visibility are never reset by these buttons (the "Reset Transform" button owns
+  the element). A grid type with no parameter shows no group button at all.
 * Style section: color button (opens a live-previewing modal ``QColorDialog``
   on click: the chosen sample shows on the button while the dialog is open and
   commits through the dialog-free seam :meth:`GridPanel.apply_color` only on OK
@@ -90,7 +98,11 @@ from composition_grid.core.grids.grid_registry import all_types, get
 from composition_grid.core.styles import Style
 from composition_grid.model.grid_model import GridModel, GridStateService
 from composition_grid.model.settings_store import JsonGridSettings
-from composition_grid.ui.param_widgets import build_param_widgets
+from composition_grid.ui.param_widgets import (
+    build_param_widgets,
+    param_needs_reset,
+    reset_button_name,
+)
 from composition_grid.ui.style_controls import (
     DASH_PATTERNS,
     color_swatch_icon,
@@ -466,6 +478,13 @@ if qt_compat.QT_AVAILABLE:
             params_box = widgets.QGroupBox("Parameters")
             self._params_layout = widgets.QVBoxLayout(params_box)
             self._params_container = None
+            # The group reset is the layout's LAST item and the dynamic container
+            # is inserted at index 0 (see :meth:`_rebuild_params`), so a type
+            # change can never move the button above the rows it resets.
+            self._reset_params_button = widgets.QPushButton("Reset parameters")
+            self._reset_params_button.setObjectName("reset_params")
+            self._reset_params_button.clicked.connect(self._on_reset_params_clicked)
+            self._params_layout.addWidget(self._reset_params_button)
             root.addWidget(params_box)
 
             style_box = widgets.QGroupBox("Style")
@@ -730,6 +749,22 @@ if qt_compat.QT_AVAILABLE:
             except ValueError as exc:  # stale control race: log, never raise
                 logger.warning("docker: set_param(%r) rejected: %s", name, exc)
 
+        def _on_param_reset_clicked(self, name: str) -> None:
+            """The row's "↺": one parameter back to its schema default. The
+            service owns the mutation, the notification and (through it) the
+            persistence; a stale control whose name the selected type no longer
+            declares is logged, never raised into Qt."""
+            try:
+                self._service.reset_param(name)
+            except ValueError as exc:
+                logger.warning("docker: reset_param(%r) rejected: %s", name, exc)
+
+        def _on_reset_params_clicked(self) -> None:
+            """The group button: every parameter of the selected grid back to its
+            default, style/transform/visibility untouched (``reset_params`` owns
+            the no-op and the single notification)."""
+            self._service.reset_params()
+
         def _on_width_changed(self, value: float) -> None:
             self._service.set_style(width_px=float(value))
 
@@ -920,10 +955,19 @@ if qt_compat.QT_AVAILABLE:
 
         def _set_grid_controls_enabled(self, enabled: bool) -> None:
             """The one enabled-state pass of :meth:`_refresh`: the grid controls
-            and "Remove grid" follow the selection, "Add grid" never does."""
+            and "Remove grid" follow the selection, "Add grid" never does.
+
+            The RESET buttons only follow it in the disable direction: an enabled
+            selection leaves their state to the value-vs-default rule computed by
+            :meth:`_refresh_params` (which runs first), because "everything is
+            live" is not the same statement as "there is something to reset"."""
             for control in self._grid_controls():
                 control.setEnabled(enabled)
             self._remove_button.setEnabled(enabled)
+            if not enabled:
+                for button in self._param_reset_buttons():
+                    button.setEnabled(False)
+                self._reset_params_button.setEnabled(False)
 
         def _row_text(self, model: GridModel) -> str:
             """Row text: ``"<label> — <type name>"``; a grid that arrived with no
@@ -1030,6 +1074,26 @@ if qt_compat.QT_AVAILABLE:
             logger.warning("docker: custom dash pattern %r not in presets", style.dash)
             return "Solid"
 
+        def _param_reset_buttons(self):
+            """Every row's "↺" button of the current params section (empty while
+            no section exists): the address is :func:`reset_button_name`, never a
+            position in the layout."""
+            widgets = qt_compat.QtWidgets
+            if self._params_container is None:
+                return
+            yield from self._params_container.findChildren(widgets.QToolButton)
+
+        def _refresh_reset_params_button(self, cls, params: "dict[str, object]") -> None:
+            """The group reset follows the same value-vs-default rule as the rows,
+            summed over the schema: nothing to reset means no button (a type with
+            no parameter) and no way to press it."""
+            differs = any(
+                param_needs_reset(param, params.get(param.name, param.default))
+                for param in cls.params
+            )
+            self._reset_params_button.setVisible(bool(cls.params))
+            self._reset_params_button.setEnabled(differs)
+
         def _refresh_params(self, model: GridModel) -> None:
             """Rebuild the params section when the type changed, else sync
             the existing controls with the stored (coerced) values."""
@@ -1040,7 +1104,11 @@ if qt_compat.QT_AVAILABLE:
                 logger.warning("docker: unknown grid type %r: %s", model.grid_type_id, exc)
                 return
             if self._params_type_id != cls.id or self._params_container is None:
-                self._rebuild_params(cls, model.params)
+                # A fresh build already carries the value-derived reset state
+                # (``build_param_widgets`` gets the stored values), so the sync
+                # loop below is skipped rather than re-writing what it set.
+                if self._rebuild_params(cls, model.params):
+                    self._refresh_reset_params_button(cls, model.params)
                 return
             for param in cls.params:
                 value = model.params.get(param.name, param.default)
@@ -1058,8 +1126,14 @@ if qt_compat.QT_AVAILABLE:
                     index = control.findText(str(value))
                     if index >= 0:
                         control.setCurrentIndex(index)
+                reset = self._params_container.findChild(
+                    widgets.QToolButton, reset_button_name(param.name)
+                )
+                if reset is not None:
+                    reset.setEnabled(param_needs_reset(param, value))
+            self._refresh_reset_params_button(cls, model.params)
 
-        def _rebuild_params(self, cls, params: "dict[str, object]") -> None:
+        def _rebuild_params(self, cls, params: "dict[str, object]") -> bool:
             """Swap the params container for a fresh build_param_widgets()
             result (module docstring: dynamic section on type change).
 
@@ -1067,25 +1141,29 @@ if qt_compat.QT_AVAILABLE:
             success: if ``build_param_widgets`` raises (an unknown
             ``Param.kind``), the old controls stay attached and usable rather
             than leaving ``_params_container`` pointing at a ``deleteLater``'d
-            widget for every later refresh to run against."""
+            widget for every later refresh to run against. ``True`` when the
+            swap happened.
+            """
             try:
                 new_container = build_param_widgets(
-                    cls.params, params, self._on_param_changed
+                    cls.params, params, self._on_param_changed, self._on_param_reset_clicked
                 )
             except Exception:  # noqa: BLE001 — a bad schema must not kill the panel
                 logger.exception(
                     "docker: param rebuild failed for %r; keeping previous controls",
                     getattr(cls, "id", cls),
                 )
-                return
+                return False
             widgets = qt_compat.QtWidgets
             if self._params_container is not None:
                 self._params_layout.removeWidget(self._params_container)
                 self._params_container.setParent(None)
                 self._params_container.deleteLater()
             self._params_container = new_container
-            self._params_layout.addWidget(self._params_container)
+            # Index 0 keeps the group "Reset parameters" button below the rows.
+            self._params_layout.insertWidget(0, self._params_container)
             self._params_type_id = cls.id
+            return True
 
         # ------------------------------------------------------ persistence
 

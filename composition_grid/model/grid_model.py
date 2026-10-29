@@ -104,6 +104,16 @@ def _default_first_element(doc_w: float, doc_h: float) -> TransformState:
     return def_element(None, doc_w, doc_h)
 
 
+def _schema_param(cls: type[GridType], name: str) -> Param:
+    """The schema :class:`Param` named ``name``, or the shared ValueError listing
+    what the type does declare (the one error source of the param setters)."""
+    param = next((p for p in cls.params if p.name == name), None)
+    if param is None:
+        known = ", ".join(p.name for p in cls.params) or "<no parameters>"
+        raise ValueError(f"unknown parameter {name!r} for {cls.id!r}; known: {known}")
+    return param
+
+
 def _coerce_param(
     cls: type[GridType], param: Param, name: str, value: object
 ) -> object:
@@ -698,14 +708,45 @@ class GridStateService:
         if model is None:
             return False
         cls = get(model.grid_type_id)
-        param = next((p for p in cls.params if p.name == name), None)
-        if param is None:
-            known = ", ".join(p.name for p in cls.params) or "<no parameters>"
-            raise ValueError(f"unknown parameter {name!r} for {cls.id!r}; known: {known}")
+        param = _schema_param(cls, name)
         coerced = _coerce_param(cls, param, name, value)
         if model.params.get(name) == coerced:
             return False
         model.params[name] = coerced
+        self._notify()
+        return True
+
+    def reset_param(self, name: str) -> bool:
+        """Restore ONE parameter of the SELECTED grid to its schema default.
+
+        The write routes through :meth:`set_param`, so a reset is an ordinary
+        value change: same coercion rule, one notification, and the persistence
+        subscribers that follow it. Unknown parameter name:
+        :class:`ValueError`; already at the default, or no selected grid: a
+        ``False`` no-op that notifies nobody.
+        """
+        model = self._mutable_model()
+        if model is None:
+            return False
+        param = _schema_param(get(model.grid_type_id), name)
+        return self.set_param(name, param.default)
+
+    def reset_params(self) -> bool:
+        """Restore EVERY parameter of the SELECTED grid to the schema defaults.
+
+        ``params`` is replaced by :func:`default_params` of the grid's own type
+        (the same seed :meth:`set_type` installs); style, transform and
+        visibility are untouched. ONE notification for the whole reset; a grid
+        already entirely at its defaults, a type with no parameters and the
+        no-selection case all answer ``False`` and notify nobody.
+        """
+        model = self._mutable_model()
+        if model is None:
+            return False
+        defaults = default_params(get(model.grid_type_id))
+        if all(model.params.get(name) == value for name, value in defaults.items()):
+            return False
+        model.params = defaults
         self._notify()
         return True
 

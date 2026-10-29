@@ -11,7 +11,7 @@ from typing import Callable
 
 import pytest
 
-from composition_grid.core.grids import all_types, default_params
+from composition_grid.core.grids import UniformGrid, all_types, default_params
 from composition_grid.core.styles import Style
 from composition_grid.core.transform_state import TransformState, def_element
 from composition_grid.model import GridModel, GridStateService
@@ -466,6 +466,110 @@ def test_set_param_no_change_no_notify():
     assert calls[0] == 0
     service.set_param("show_center_dot", True)
     assert calls[0] == 1
+
+
+# ---------------------------------------------------------------- reset param
+
+
+def test_reset_param_restores_the_schema_default_with_one_notify():
+    service = GridStateService()
+    _routed(service)
+    service.set_type("uniform_grid")
+    service.set_param("columns", 7)
+    service.set_param("margin", 0.3)
+    calls, cb = _counter()
+    service.on_change(cb)
+
+    assert service.reset_param("columns") is True
+    assert calls[0] == 1, "a reset is one ordinary value change"
+    assert service.selected().params["columns"] == default_params(UniformGrid)["columns"]
+    assert service.selected().params["margin"] == pytest.approx(
+        0.3
+    ), "reset_param touches only its own parameter"
+
+
+def test_reset_param_already_at_default_is_a_false_no_op():
+    service = GridStateService()
+    _routed(service)
+    service.set_type("uniform_grid")
+    calls, cb = _counter()
+    service.on_change(cb)
+
+    assert service.reset_param("columns") is False
+    assert calls[0] == 0
+
+
+def test_reset_param_unknown_name_raises():
+    service = GridStateService()
+    _routed(service)
+    service.set_type("center_cross")
+    with pytest.raises(ValueError):
+        service.reset_param("no_such_param")
+
+
+def test_reset_params_restores_the_whole_schema_with_one_notify():
+    service = GridStateService()
+    model = _routed(service)
+    service.set_type("uniform_grid")
+    service.set_param("columns", 9)
+    service.set_param("margin", 0.4)
+    service.set_style(width_px=5.0)
+    service.set_rotation(30.0)
+    service.toggle_visible()
+    calls, cb = _counter()
+    service.on_change(cb)
+
+    assert service.reset_params() is True
+    assert calls[0] == 1, "the whole group reset notifies exactly once"
+    assert model.params == default_params(UniformGrid)
+    # The reset is a PARAMETER reset: nothing else on the grid moves.
+    assert model.style.width_px == pytest.approx(5.0)
+    assert model.transform.rotation_deg == pytest.approx(30.0)
+    assert model.visible is False
+
+
+def test_reset_params_at_default_or_without_parameters_is_a_false_no_op():
+    service = GridStateService()
+    _routed(service)
+    service.set_type("uniform_grid")
+    calls, cb = _counter()
+    service.on_change(cb)
+
+    assert service.reset_params() is False, "already at the defaults"
+
+    service.set_type("rule_of_thirds")  # a type with no parameter at all
+    calls[0] = 0
+    assert service.reset_params() is False
+    assert calls[0] == 0
+
+
+def test_reset_params_targets_the_selected_grid_only():
+    service = GridStateService()
+    first = _routed(service)
+    service.set_type("uniform_grid")
+    service.set_param("columns", 8)
+    second_id = service.add_grid()
+    service.set_type("uniform_grid")
+    service.set_param("columns", 4)
+    second = service.get(second_id)
+    service.select_grid(first.grid_id)
+
+    assert service.reset_params() is True
+    assert first.params == default_params(UniformGrid)
+    assert second.params["columns"] == 4, "a sibling grid keeps its own values"
+
+
+@pytest.mark.parametrize("method", ["reset_param", "reset_params"])
+def test_param_reset_without_a_selected_grid_is_a_false_no_op(method):
+    service = GridStateService()
+    service.ensure("doc", DOC_W, DOC_H)
+    service.set_active("doc")  # routed, but no grid added: nothing selected
+    calls, cb = _counter()
+    service.on_change(cb)
+
+    reset = getattr(service, method)
+    assert (reset("columns") if method == "reset_param" else reset()) is False
+    assert calls[0] == 0
 
 
 # ---------------------------------------------------------------- style

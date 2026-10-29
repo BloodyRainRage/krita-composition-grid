@@ -20,6 +20,13 @@ Pinned semantics implemented here:
   the schema minimum/maximum; ``bool`` -> QCheckBox; ``choice`` -> QComboBox
   with the schema choices in order and the current value selected. A user
   change calls ``on_change(name, raw_widget_value)`` (the service coerces).
+* Reset to default: one "↺" ``QToolButton`` per row (objectName
+  ``reset_button_name(name)``, tooltip naming the default), enabled exactly while
+  the stored value differs from the schema default and firing
+  ``on_reset(name)``; the docker's Parameters group adds a "Reset parameters"
+  button routed to ``service.reset_params`` (hidden for a type with no
+  parameter). Both ride the ordinary service path, so they notify once and are
+  persisted like any other value change — and neither touches style/transform.
 * Docker: type combo routes ``service.set_type``; the params section is
   REBUILT on type change (no stale controls); width spin (range 0.25..12,
   step 0.05) and opacity slider (0..100 -> /100) route ``set_style``; the
@@ -78,7 +85,10 @@ from composition_grid.ui.docker_registration import (
     make_panel_docker_class,
     shared_state_service,
 )
-from composition_grid.ui.param_widgets import build_param_widgets
+from composition_grid.ui.param_widgets import (
+    build_param_widgets,
+    reset_button_name,
+)
 from composition_grid.ui.style_controls import DASH_PATTERNS
 from composition_grid.ui.transform_controller import TransformController
 
@@ -263,6 +273,92 @@ def test_current_value_without_default_selects_combo():
         lambda name, value: None,
     )
     assert container.findChild(QtWidgets.QComboBox, "origin").currentText() == "bl"
+
+
+# ------------------------------------------------------------------ param reset
+
+
+def _reset_button(widget, name: str):
+    """The "↺" of the row editing ``name`` — addressed by its objectName, which
+    is exactly what the docker refresh pass uses too."""
+    return widget.findChild(QtWidgets.QToolButton, reset_button_name(name))
+
+
+def test_every_param_row_carries_a_reset_button():
+    """One "↺" per schema Param (number, bool and choice alike), naming the
+    default it restores in its tooltip and inert while the value IS that
+    default."""
+    container = build_param_widgets(
+        UniformGrid.params,
+        default_params(UniformGrid),
+        lambda name, value: None,
+        lambda name: None,
+    )
+    for param in UniformGrid.params:
+        button = _reset_button(container, param.name)
+        assert button is not None, f"{param.name} has no reset button"
+        assert button.text() == "↺"
+        assert button.toolTip() == f"Reset to default ({param.default})"
+        assert not button.isEnabled(), "at the default there is nothing to reset"
+    assert _reset_button(container, "columns").maximumWidth() <= 32, (
+        "the row stays compact: the control keeps the value column"
+    )
+
+
+def test_reset_button_enabled_only_while_the_value_differs():
+    """Per-kind enabled state at build time: columns 5 != 3, margin 0.0 ==
+    default, and the bool/choice kinds follow the same rule."""
+    uniform = build_param_widgets(
+        UniformGrid.params,
+        {**default_params(UniformGrid), "columns": 5},
+        lambda name, value: None,
+        lambda name: None,
+    )
+    assert _reset_button(uniform, "columns").isEnabled()
+    assert not _reset_button(uniform, "rows").isEnabled()
+    assert not _reset_button(uniform, "margin").isEnabled()
+
+    cross = build_param_widgets(
+        CenterCross.params,
+        {**default_params(CenterCross), "show_center_dot": True},
+        lambda name, value: None,
+        lambda name: None,
+    )
+    assert _reset_button(cross, "show_center_dot").isEnabled(), "True != False default"
+    assert not _reset_button(cross, "show_vertical").isEnabled()
+
+    spiral = build_param_widgets(
+        GoldenSpiral.params,
+        {**default_params(GoldenSpiral), "origin": "br"},
+        lambda name, value: None,
+        lambda name: None,
+    )
+    assert _reset_button(spiral, "origin").isEnabled()
+
+
+def test_reset_button_click_reports_only_the_param_name():
+    """The button is a signal, not a value write: it fires ``on_reset(name)`` and
+    never invents an ``on_change`` for the same gesture."""
+    resets: list = []
+    changes: list = []
+    container = build_param_widgets(
+        UniformGrid.params,
+        {**default_params(UniformGrid), "columns": 5, "rows": 4},
+        lambda name, value: changes.append((name, value)),
+        resets.append,
+    )
+    _reset_button(container, "columns").click()
+    assert resets == ["columns"]
+    assert changes == []
+
+
+def test_container_without_reset_callback_has_no_buttons():
+    """``on_reset`` is optional: a read-only section builds exactly as before and
+    carries no button that could do nothing."""
+    container = build_param_widgets(
+        UniformGrid.params, default_params(UniformGrid), lambda name, value: None
+    )
+    assert container.findChildren(QtWidgets.QToolButton) == []
 
 
 # --------------------------------------------------------------------- docker
@@ -662,6 +758,139 @@ def test_make_panel_docker_class_falls_back_to_shared_service():
     docker_cls = make_panel_docker_class(QtWidgets.QDockWidget)
     docker = docker_cls()
     assert docker.panel.service is shared_state_service()
+
+
+# ------------------------------------------------------------- param reset
+#
+# Both reset affordances are docker-side views of ONE service rule: a parameter
+# differs from its schema default or it does not. The tests therefore drive a
+# real GridStateService and assert the enabled state, the routing, the reach of
+# a reset (parameters ONLY — style/transform/visibility stay) and the fact that
+# a reset notifies and persists exactly like a typed value.
+
+
+def _uniform_panel(**kwargs):
+    """A panel over a real document whose single grid is a Uniform Grid (the
+    schema with an int, another int and a float parameter)."""
+    service = _service_with_doc()
+    service.set_type("uniform_grid")
+    return service, _panel(service, **kwargs)
+
+
+def test_docker_row_reset_button_follows_the_model_and_resets_one_param():
+    """The "↺" of the columns row lights up when the value leaves the default
+    (typed OR set externally), resets ONLY its own parameter and goes inert
+    again once the refresh shows the restored value."""
+    service, panel = _uniform_panel()
+    columns = panel.findChild(QtWidgets.QSpinBox, "columns")
+    rows = panel.findChild(QtWidgets.QSpinBox, "rows")
+    columns_reset = _reset_button(panel, "columns")
+    rows_reset = _reset_button(panel, "rows")
+    assert not columns_reset.isEnabled()
+
+    columns.setValue(5)  # user gesture -> refresh re-computes the row
+    assert columns_reset.isEnabled()
+    assert not rows_reset.isEnabled(), "a sibling parameter at default stays inert"
+
+    service.set_param("rows", 4)  # external gesture -> same rule
+    assert rows_reset.isEnabled()
+
+    columns_reset.click()
+    model = _active_model(service)
+    assert model.params["columns"] == default_params(UniformGrid)["columns"]
+    assert model.params["rows"] == 4, "one button resets one parameter"
+    assert columns.value() == 3 and rows.value() == 4, "the widget follows"
+    assert not columns_reset.isEnabled()
+    assert rows_reset.isEnabled()
+
+
+def test_docker_group_reset_button_resets_every_param_and_leaves_the_rest():
+    """"Reset parameters" is enabled while ANY parameter differs, restores the
+    whole schema in one gesture and never touches style, transform or
+    visibility — those have their own controls."""
+    service, panel = _uniform_panel()
+    panel.findChild(QtWidgets.QSpinBox, "columns").setValue(9)
+    panel.findChild(QtWidgets.QSpinBox, "rows").setValue(2)
+    panel.findChild(QtWidgets.QDoubleSpinBox, "margin").setValue(0.2)
+    service.set_style(width_px=5.0)
+    service.set_rotation(30.0)
+    service.toggle_visible()
+
+    group = panel.findChild(QtWidgets.QPushButton, "reset_params")
+    assert group.isEnabled() and not group.isHidden()
+    group.click()
+
+    model = _active_model(service)
+    assert model.params == default_params(UniformGrid)
+    assert model.style.width_px == pytest.approx(5.0)
+    assert model.transform.rotation_deg == pytest.approx(30.0)
+    assert model.visible is False
+    assert not group.isEnabled(), "back at the defaults: nothing left to reset"
+    for param in UniformGrid.params:
+        assert not _reset_button(panel, param.name).isEnabled()
+
+
+def test_docker_group_reset_button_hidden_for_a_type_without_parameters():
+    """Rule of Thirds declares no parameter: the group button is neither shown
+    nor clickable, so the group cannot promise a reset it has nothing to do."""
+    service = _service_with_doc()  # registry-first type: rule_of_thirds
+    panel = _panel(service)
+    group = panel.findChild(QtWidgets.QPushButton, "reset_params")
+    assert group.isHidden()
+    assert not group.isEnabled()
+
+    service.set_type("uniform_grid")  # a schema with params brings it back
+    assert not group.isHidden()
+    assert not group.isEnabled(), "freshly at the defaults"
+
+
+def test_docker_reset_buttons_are_inert_without_a_selection():
+    """Removing the grid disables both resets, and a forced click changes no
+    service state (the handlers have nothing to write to)."""
+    service, panel = _uniform_panel()
+    panel.findChild(QtWidgets.QSpinBox, "columns").setValue(5)
+    columns_reset = _reset_button(panel, "columns")
+    group = panel.findChild(QtWidgets.QPushButton, "reset_params")
+    assert columns_reset.isEnabled() and group.isEnabled()
+
+    service.remove_grid()
+    assert not columns_reset.isEnabled()
+    assert not group.isEnabled()
+
+    notifications: list = []
+    service.on_change(lambda: notifications.append(1))
+    group.click()
+    columns_reset.click()
+    assert notifications == [], "nothing selected is nothing to notify"
+    assert service.selected() is None
+
+
+def test_docker_param_reset_rides_set_param_and_persists_once():
+    """The persistence pin: a reset is not a side door into the model — it goes
+    through ``set_param``, notifies exactly once (the annotation save and the
+    last-used store follow that one notification) and writes the restored value
+    to the injected store without echoing a second mutation."""
+    transport = FakeTransport()
+    service, panel = _uniform_panel(settings=JsonGridSettings(transport))
+    panel.findChild(QtWidgets.QSpinBox, "columns").setValue(6)
+
+    set_param_calls: list = []
+    real_set_param = service.set_param
+
+    def spy(name, value):
+        set_param_calls.append((name, value))
+        return real_set_param(name, value)
+
+    service.set_param = spy
+    notifications: list = []
+    service.on_change(lambda: notifications.append(1))
+
+    _reset_button(panel, "columns").click()
+
+    assert set_param_calls == [("columns", 3)], "reset_param writes via set_param"
+    assert notifications == [1], "one notification, no refresh echo"
+    payload = json.loads(transport.data["composition_grid|active_grid"])
+    assert payload["params"]["columns"] == 3
 
 
 # --------------------------------------------------- drag -> docker + persist

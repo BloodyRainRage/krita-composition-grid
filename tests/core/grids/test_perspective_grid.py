@@ -1,15 +1,12 @@
 """Tests for the Perspective grid type: a one-vanishing-point ray fan.
 
-Pinned semantics: rays leave the VP at DOC-space angles
-``alpha = k * ray_step_deg`` (degrees are document-pixel angles, so a doc
-direction ``(cos a, sin a)`` maps to the normalized delta
-``(cos a * L_doc / w, sin a * L_doc / h)`` with ``L_doc = 2.5*max(w,h)``)
-over a HALF turn: ``k = 0 .. ceil(180/step) - 1``.  Each ray is drawn
-through the VP in BOTH directions, so a full turn would emit every line
-twice.  Each ray is clipped to the extended rect
-``Bounds(-0.5, -0.5, 2.0, 2.0)``.  A Dot marks the VP; ``show_horizon``
-adds the horizontal segment at ``y = vp_y`` across the extended rect's x
-range.
+Pinned semantics: each of the four edges of the element's normalized [0,1]
+square is split into ``divisions`` equal segments, and one ray is drawn from
+the VP through each division point (corners included, deduplicated) out to
+the clip rect ``Bounds(-0.5, -0.5, 2.0, 2.0)``.  A target coinciding with the
+VP emits no ray, and two targets sharing a direction from the VP emit one
+ray.  A Dot marks the VP; ``show_horizon`` adds the horizontal segment at
+``y = vp_y`` across the extended rect's x range.
 """
 
 import math
@@ -31,13 +28,13 @@ from composition_grid.core.grids import (
 )
 
 BOUNDS = Bounds(x=0.0, y=0.0, w=1000.0, h=600.0)
-BOUNDS_WIDE = Bounds(x=0.0, y=0.0, w=1000.0, h=500.0)
 EXTENDED = Bounds(x=-0.5, y=-0.5, w=2.0, h=2.0)
 VP = (0.5, 0.5)
+VP_TOL = 1e-9
 
 
-def segments(geom):
-    return [p for p in geom if isinstance(p, Segment)]
+def build(**params):
+    return PerspectiveGrid().build(BOUNDS, params)
 
 
 def rays_before_dot(geom):
@@ -46,17 +43,83 @@ def rays_before_dot(geom):
     return [p for p in geom[:dot_index] if isinstance(p, Segment)]
 
 
-def collinear_with(seg, vp, tol=1e-9):
-    """Cross product of (p1 - vp) x (p2 - vp) ~ 0."""
-    cross = (seg.p1[0] - vp[0]) * (seg.p2[1] - vp[1]) - (seg.p1[1] - vp[1]) * (
-        seg.p2[0] - vp[0]
+def rays(divisions=8, vp=VP):
+    """The ray fan alone (horizon off), so counts skip that extra segment."""
+    return rays_before_dot(
+        build(
+            vp_x=vp[0],
+            vp_y=vp[1],
+            divisions=divisions,
+            show_horizon=False,
+        )
     )
+
+
+def collinear_with(seg, point, tol=VP_TOL):
+    """Cross product of (p1 - point) x (p2 - point) ~ 0."""
+    cross = (seg.p1[0] - point[0]) * (seg.p2[1] - point[1]) - (
+        seg.p1[1] - point[1]
+    ) * (seg.p2[0] - point[0])
     return abs(cross) < tol
 
 
-def endpoint_outside_unit(p, tol=1e-9):
-    x, y = p
-    return (x < -tol or x > 1.0 + tol or y < -tol or y > 1.0 + tol)
+def on_segment(seg, point, tol=1e-9):
+    """Whether ``point`` lies on the segment (collinearity checked apart)."""
+    return (
+        min(seg.p1[0], seg.p2[0]) - tol
+        <= point[0]
+        <= max(seg.p1[0], seg.p2[0]) + tol
+        and min(seg.p1[1], seg.p2[1]) - tol
+        <= point[1]
+        <= max(seg.p1[1], seg.p2[1]) + tol
+    )
+
+
+def edge_targets(divisions):
+    """The distinct division points of the four frame edges of the unit square."""
+    step = 1.0 / divisions
+    return {
+        point
+        for i in range(divisions + 1)
+        for point in (
+            (i * step, 0.0),
+            (i * step, 1.0),
+            (0.0, i * step),
+            (1.0, i * step),
+        )
+    }
+
+
+def edge_crossings(fan, axis, value):
+    """Coordinates along the other axis where a ray crosses the frame line
+    ``axis=value`` WITHIN the drawn segment, restricted to the frame span: a
+    ray aimed past a corner meets the extended image line outside the frame."""
+    other = 1 - axis
+    hits = []
+    for seg in fan:
+        if seg.p1[axis] == seg.p2[axis]:
+            continue  # parallel to this image line: no crossing
+        t = (value - seg.p1[axis]) / (seg.p2[axis] - seg.p1[axis])
+        if not -1e-9 <= t <= 1.0 + 1e-9:
+            continue  # the crossing point is not on the drawn ray
+        coordinate = seg.p1[other] + t * (seg.p2[other] - seg.p1[other])
+        if -1e-9 <= coordinate <= 1.0 + 1e-9:
+            hits.append(round(coordinate, 9))
+    return sorted(set(hits))
+
+
+def fan_angles(fan):
+    return sorted(
+        round(
+            math.degrees(math.atan2(s.p2[1] - s.p1[1], s.p2[0] - s.p1[0])),
+            6,
+        )
+        for s in fan
+    )
+
+
+def frame_points(divisions):
+    return [i / divisions for i in range(divisions + 1)]
 
 
 class TestSchema:
@@ -70,13 +133,7 @@ class TestSchema:
         assert PerspectiveGrid.params == (
             Param(name="vp_x", kind="number", default=0.5, minimum=0.0, maximum=1.0),
             Param(name="vp_y", kind="number", default=0.5, minimum=0.0, maximum=1.0),
-            Param(
-                name="ray_step_deg",
-                kind="number",
-                default=10,
-                minimum=1.0,
-                maximum=30.0,
-            ),
+            Param(name="divisions", kind="number", default=8, minimum=2, maximum=32),
             Param(name="show_horizon", kind="bool", default=True),
         )
 
@@ -84,7 +141,7 @@ class TestSchema:
         assert default_params(PerspectiveGrid) == {
             "vp_x": 0.5,
             "vp_y": 0.5,
-            "ray_step_deg": 10,
+            "divisions": 8,
             "show_horizon": True,
         }
 
@@ -93,103 +150,133 @@ class TestSchema:
 
 
 class TestRays:
-    def test_ray_count_matches_step(self):
-        """Half turn: one line per direction, so ceil(180/step) rays."""
-        for step, expected in ((10, 18), (30, 6)):
-            geom = PerspectiveGrid().build(
-                BOUNDS, {"ray_step_deg": step, "show_horizon": False}
-            )
-            assert len(segments(geom)) == expected
+    def test_ray_count_is_one_per_edge_target(self):
+        """divisions=4: 4 edges * 4 segments = 16 distinct targets, none
+        coinciding with the centred VP, none sharing a direction."""
+        assert len(rays(4)) == 16
 
-    def test_ray_count_clamped_step(self):
-        geom = PerspectiveGrid().build(
-            BOUNDS, {"ray_step_deg": 45.0, "show_horizon": False}
-        )
-        assert len(segments(geom)) == 6  # 45 clamps to 30 -> 180/30
-        geom = PerspectiveGrid().build(
-            BOUNDS, {"ray_step_deg": 0.0, "show_horizon": False}
-        )
-        assert len(segments(geom)) == 180  # 0 clamps to 1 -> 180/1
+    def test_ray_count_scales_with_divisions(self):
+        for divisions in (2, 3, 4, 8, 32):
+            assert len(rays(divisions)) == 4 * divisions, divisions
 
-    def test_no_rays_are_emitted_twice(self):
-        """A ray through the VP covers both sides, so alpha and alpha+180
-        must not both be emitted (endpoint sets are unique)."""
-        geom = PerspectiveGrid().build(BOUNDS, {"show_horizon": False})
-        rays = rays_before_dot(geom)
-        keys = {frozenset((s.p1, s.p2)) for s in rays}
-        assert len(keys) == len(rays)
-        assert len(rays) == 18
+    def test_divisions_clamped_and_rounded(self):
+        # 1 clamps up to 2, 99 clamps down to 32, 4.4 and 3.5 round to 4.
+        for divisions, expected in ((1, 8), (99, 128), (4.4, 16), (3.5, 16)):
+            assert len(rays(divisions)) == expected, divisions
 
-    def test_default_output_shape(self):
-        """18 rays + the VP dot + the horizon line."""
-        geom = PerspectiveGrid().build(BOUNDS, {})
-        assert len(geom) == 20
-        assert isinstance(geom[-2], Dot)
-        assert isinstance(geom[-1], Segment)
-
-    def test_rays_start_at_vp(self):
-        """Every kept ray passes through the VP (cross product ~ 0)."""
-        geom = PerspectiveGrid().build(BOUNDS, {})
-        rays = rays_before_dot(geom)
-        assert len(rays) == 18
-        assert Dot(VP) in geom
-        for seg in rays:
+    def test_every_ray_starts_at_and_passes_through_the_vp(self):
+        fan = rays()
+        assert len(fan) == 32
+        for seg in fan:
+            assert seg.p1 == VP
             assert collinear_with(seg, VP)
 
+    def test_every_edge_target_lies_on_a_ray(self):
+        fan = rays(4)
+        for target in sorted(edge_targets(4)):
+            assert any(
+                collinear_with(seg, target) and on_segment(seg, target)
+                for seg in fan
+            ), target
+
+    def test_frame_edges_are_crossed_at_equal_intervals(self):
+        """The point of the construction: the rays crossing a frame edge hit
+        it at EQUAL intervals, wherever the VP sits."""
+        for divisions in (2, 4, 8):
+            expected = frame_points(divisions)
+            for vp in ((0.5, 0.5), (0.2, 0.8), (0.75, 0.35)):
+                fan = rays(divisions, vp)
+                for axis, value in ((0, 0.0), (0, 1.0), (1, 0.0), (1, 1.0)):
+                    crossings = edge_crossings(fan, axis, value)
+                    assert crossings == pytest.approx(expected), (vp, axis, value)
+                    gaps = [b - a for a, b in zip(crossings, crossings[1:])]
+                    assert all(
+                        gap == pytest.approx(1.0 / divisions) for gap in gaps
+                    ), (vp, axis, value)
+
+    def test_moving_the_vp_refracts_the_fan_not_the_frame(self):
+        """Ray angles change with the VP; the equal edge spacing does not."""
+        centre = rays(4)
+        off = rays(4, (0.3, 0.65))
+        assert len(centre) == len(off) == 16
+        assert fan_angles(centre) != fan_angles(off)
+        assert {frozenset((s.p1, s.p2)) for s in centre} != {
+            frozenset((s.p1, s.p2)) for s in off
+        }
+        expected = frame_points(4)
+        for fan in (centre, off):
+            assert edge_crossings(fan, 1, 1.0) == pytest.approx(expected)
+            assert edge_crossings(fan, 0, 1.0) == pytest.approx(expected)
+
+    def test_no_rays_are_emitted_twice(self):
+        fan = rays(4)
+        assert len({frozenset((s.p1, s.p2)) for s in fan}) == len(fan)
+
+    def test_same_direction_targets_collapse_into_one_ray(self):
+        """A VP on the left edge sees s=0 and s=0.25 in one direction."""
+        fan = rays(4, (0.0, 0.5))
+        assert len({frozenset((s.p1, s.p2)) for s in fan}) == len(fan)
+        assert len(fan) == 13  # 16 targets - the VP - 2 collinear pairs
+        assert [s for s in fan if s.p2 == (0.0, -0.5)] == [
+            Segment((0.0, 0.5), (0.0, -0.5))
+        ]
+
+    def test_vp_on_an_edge_or_corner_emits_no_degenerate_ray(self):
+        for vp in ((0.0, 0.5), (0.5, 0.0), (0.0, 0.0), (1.0, 1.0), (0.25, 1.0)):
+            fan = rays(4, vp)
+            assert fan, vp
+            for seg in fan:
+                assert seg.p1 != seg.p2, vp
+                assert collinear_with(seg, vp), vp
+            assert Dot(vp) in build(vp_x=vp[0], vp_y=vp[1], divisions=4)
+
     def test_single_vp_dot(self):
-        dots = [p for p in PerspectiveGrid().build(BOUNDS, {}) if isinstance(p, Dot)]
-        assert dots == [Dot(VP)]
+        assert [p for p in build() if isinstance(p, Dot)] == [Dot(VP)]
 
     def test_rays_escape_bounds_per_contract(self):
         """At least one ray leaves the [0,1] element — yet nothing leaves
         the extended rect Bounds(-0.5, -0.5, 2.0, 2.0)."""
-        geom = PerspectiveGrid().build(BOUNDS, {})
-        rays = rays_before_dot(geom)
-        escapees = [s for s in rays if endpoint_outside_unit(s.p1) or endpoint_outside_unit(s.p2)]
-        assert escapees  # at least one ray leaves the element bounds
+        geom = build()
+        fan = rays_before_dot(geom)
+        assert any(
+            min(s.p1[0], s.p2[0]) < 0.0
+            or max(s.p1[0], s.p2[0]) > 1.0
+            or min(s.p1[1], s.p2[1]) < 0.0
+            or max(s.p1[1], s.p2[1]) > 1.0
+            for s in fan
+        )
         for prim in geom:
             assert primitive_within_bounds(prim, EXTENDED, tol=1e-6)
 
-    def test_ray_directions_respect_doc_aspect(self):
-        """Doc-space angles: at alpha=0 the normalized direction is purely
-        +x (1, 0); at alpha=90 it is (0, 1) — pinned on w=1000 x h=500,
-        where the two axes normalize differently (2:1)."""
-        geom = PerspectiveGrid().build(BOUNDS_WIDE, {"show_horizon": False})
-        rays = rays_before_dot(geom)
-        horiz = [s for s in rays if s.p1[1] == s.p2[1]]  # alpha 0 only
-        vert = [s for s in rays if abs(s.p1[0] - s.p2[0]) < 1e-12]  # alpha 90
-        assert len(horiz) == 1
-        for s in horiz:
-            assert s.p1[1] == pytest.approx(VP[1], abs=1e-12)
-            assert min(s.p1[0], s.p2[0]) == pytest.approx(-0.5, abs=1e-9)
-            assert max(s.p1[0], s.p2[0]) == pytest.approx(1.5, abs=1e-9)
-        assert len(vert) == 1
-        for s in vert:
-            assert s.p1[0] == pytest.approx(VP[0], abs=1e-12)
-            assert min(s.p1[1], s.p2[1]) == pytest.approx(-0.5, abs=1e-9)
-            assert max(s.p1[1], s.p2[1]) == pytest.approx(1.5, abs=1e-9)
-        # Doc degrees survive the anisotropic mapping: with step 10 the
-        # alpha=30 ray (k=3) has normalized slope (w/h) * tan(30).
-        slanted = [
-            s for s in rays
-            if s.p1[0] != s.p2[0] and abs(s.p1[1] - s.p2[1]) > 1e-12
-        ]
-        slope30 = (BOUNDS_WIDE.w / BOUNDS_WIDE.h) * math.tan(math.radians(30.0))
-        ray30 = [
-            s for s in slanted
-            if math.isclose(
-                (s.p2[1] - s.p1[1]) / (s.p2[0] - s.p1[0]), slope30, abs_tol=1e-9
-            )
-        ]
-        assert len(ray30) == 1  # alpha 30 (alpha 210 is the same line)
+    def test_every_primitive_stays_in_the_extended_rect(self):
+        for vp in ((0.0, 0.0), (1.0, 1.0), (0.5, 0.5), (0.1, 0.9)):
+            geom = build(vp_x=vp[0], vp_y=vp[1], divisions=16)
+            for prim in geom:
+                assert primitive_within_bounds(prim, EXTENDED, tol=1e-9), (vp, prim)
+
+    def test_empty_bounds_yield_nothing(self):
+        assert PerspectiveGrid().build(Bounds(0.0, 0.0, 0.0, 600.0), {}) == ()
+
+
+class TestLegacyParamIgnored:
+    def test_ray_step_deg_is_ignored(self):
+        """Stored settings may still carry the removed angle-fan parameter."""
+        expected = build(divisions=5)
+        for legacy in (10, 30.0, "15", None):
+            assert build(divisions=5, ray_step_deg=legacy) == expected
+
+    def test_ray_step_deg_does_not_reappear_in_the_defaults(self):
+        assert "ray_step_deg" not in default_params(PerspectiveGrid)
 
 
 class TestHorizon:
     def test_horizon_at_vp_y(self):
-        geom = PerspectiveGrid().build(BOUNDS, {})
+        geom = build(divisions=4)
+        assert len(geom) == 18  # 16 rays + VP dot + horizon
+        assert isinstance(geom[-2], Dot)
         assert geom[-1] == Segment((-0.5, VP[1]), (1.5, VP[1]))
 
     def test_horizon_disabled(self):
-        geom = PerspectiveGrid().build(BOUNDS, {"show_horizon": False})
-        assert len(geom) == 19  # 18 rays + VP dot; no trailing horizon
+        geom = build(divisions=4, show_horizon=False)
+        assert len(geom) == 17  # 16 rays + VP dot; no trailing horizon
         assert isinstance(geom[-1], Dot)

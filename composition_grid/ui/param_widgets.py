@@ -6,7 +6,9 @@ module is *functions-only* (no QWidget subclass at module level), so it
 imports cleanly even without PyQt — consistent with the sibling Qt modules,
 which raise ``RuntimeError`` at CONSTRUCTION without PyQt (``overlay.GridOverlay``
 encodes that as a stub class; here the constructors are functions, so each
-public entry point raises through :func:`_require_qt` at call time).
+Qt-touching entry point raises through :func:`_require_qt` at call time; the
+value-rule helpers :func:`param_needs_reset` and :func:`reset_button_name` are
+pure and never touch Qt).
 
 Pinned conventions (``core.grids.base.Param`` schema):
 
@@ -22,14 +24,24 @@ Pinned conventions (``core.grids.base.Param`` schema):
   is preselected, an unknown current value selects the schema default.
 * Every control gets ``setObjectName(param.name)`` — that is how the docker
   finds controls again for its refresh pass (and how tests address them).
+* Every row carries a compact ``QToolButton`` "↺" right of its control: the
+  per-parameter reset (``on_reset(name)``, docker-routed to
+  ``GridStateService.reset_param``). It is enabled exactly while the current
+  value differs from ``Param.default`` (the docker re-applies that rule on
+  every refresh), its tooltip names the default it restores, and its object
+  name is :func:`reset_button_name` — the address the refresh pass uses. A row
+  built without ``on_reset`` has no button at all (the factory stays usable
+  for a read-only section).
 * The emitted callback is ``on_change(name, raw_widget_value)``: the RAW Qt
   value (int/float/bool/choice-str) is reported uncoerced; the service
   (``GridStateService.set_param``) owns schema coercion/clamping.
 * Echo safety: signals are connected AFTER the initial value is set, so
-  building a container never calls ``on_change``.
+  building a container never calls ``on_change``. The reset button rides on
+  ``clicked`` (user-only), so a programmatic refresh of the row can never
+  fire it.
 
 The returned value is a plain ``QWidget`` holding a ``QFormLayout`` of
-``label -> control`` rows (English labels: param name with underscores
+``label -> control row`` rows (English labels: param name with underscores
 spaced and capitalized).
 """
 
@@ -40,7 +52,35 @@ from typing import Any, Callable, Mapping, Sequence
 from composition_grid import qt_compat
 from composition_grid.core.grids.base import Param
 
-__all__ = ["build_param_widgets"]
+__all__ = ["build_param_widgets", "param_needs_reset", "reset_button_name"]
+
+_RESET_GLYPH = "↺"
+
+_RESET_BUTTON_WIDTH_PX = 22
+"""One compact square per row: wide enough for the glyph, narrow enough that a
+spin box keeps the line's value column (the docker is a narrow dock)."""
+
+_RESET_BUTTON_SUFFIX = "__reset"
+
+
+def reset_button_name(param_name: str) -> str:
+    """The objectName of ``param_name``'s reset button (module docstring): the
+    docker's refresh pass and the tests address it, never its position."""
+    return f"{param_name}{_RESET_BUTTON_SUFFIX}"
+
+
+def param_needs_reset(param: Param, value: Any) -> bool:
+    """``True`` when ``value`` differs from the schema default of ``param``.
+
+    Plain ``!=`` is the whole rule: an int/float pair like ``3`` vs ``3.0``
+    compares equal (the widget and the service may disagree on the numeric
+    type, not on the value)."""
+    return bool(value != param.default)
+
+
+def _default_text(param: Param) -> str:
+    """The default as it reads in a tooltip: ``3``, ``0.25``, ``True``, ``tl``."""
+    return str(param.default)
 
 
 def _require_qt(what: str) -> None:
@@ -126,17 +166,38 @@ def _connect(control, name: str, on_change: Callable[[str, Any], None]) -> None:
         raise ValueError(f"param_widgets: unknown control type {type(control)!r}")
 
 
+def _make_reset_button(param: Param, value: Any, on_reset: Callable[[str], None]):
+    """One compact "↺" tool button restoring ``param`` to its default.
+
+    ``autoRaise`` is what keeps it visually light in a narrow row, and the fixed
+    width is the compactness half of the contract: the control keeps the rest of
+    the line."""
+    widgets = qt_compat.QtWidgets
+    button = widgets.QToolButton()
+    button.setObjectName(reset_button_name(param.name))
+    button.setText(_RESET_GLYPH)
+    button.setToolTip(f"Reset to default ({_default_text(param)})")
+    button.setAutoRaise(True)
+    button.setFixedWidth(_RESET_BUTTON_WIDTH_PX)
+    button.setEnabled(param_needs_reset(param, value))
+    button.clicked.connect(lambda _checked=False: on_reset(param.name))
+    return button
+
+
 def build_param_widgets(
     params_schema: Sequence[Param],
     current: Mapping[str, Any] | None,
     on_change: Callable[[str, Any], None],
+    on_reset: Callable[[str], None] | None = None,
 ):
     """Build the container widget holding one control per schema ``Param``.
 
     ``current`` supplies stored values (missing names fall back to each
     ``Param.default``); ``on_change(name, raw_value)`` fires on every user
-    change with the uncoerced widget value. Returns a ``QWidget`` with a
-    ``QFormLayout``; raises ``RuntimeError`` without PyQt (module docstring).
+    change with the uncoerced widget value. ``on_reset(name)``, when given, is
+    fired by that row's "↺" button (no argument means no reset buttons at all).
+    Returns a ``QWidget`` with a ``QFormLayout``; raises ``RuntimeError``
+    without PyQt (module docstring).
     """
     _require_qt("build_param_widgets")
     widgets = qt_compat.QtWidgets
@@ -147,6 +208,15 @@ def build_param_widgets(
         value = values.get(param.name, param.default)
         control = _make_control(param, value)
         control.setObjectName(param.name)
-        form.addRow(_display_label(param.name), control)
+        if on_reset is None:
+            form.addRow(_display_label(param.name), control)
+        else:
+            row = widgets.QWidget()
+            row_layout = widgets.QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(2)
+            row_layout.addWidget(control, 1)
+            row_layout.addWidget(_make_reset_button(param, value, on_reset), 0)
+            form.addRow(_display_label(param.name), row)
         _connect(control, param.name, on_change)  # connect AFTER init: no echo
     return container
