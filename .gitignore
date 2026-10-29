@@ -1,0 +1,7 @@
+.superpowers/
+.venv/
+__pycache__/
+# Сборка плагина для импорта в Krita (артефакт, не источник):
+# перегенерируется командой `uv run python tools/build_plugin_zip.py`.
+dist/
+.pytest_cache/

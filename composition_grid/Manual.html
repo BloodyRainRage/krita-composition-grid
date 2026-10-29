@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Composition Grid — User Manual</title>
+</head>
+<body>
+<h1>Composition Grid</h1>
+
+<p>
+A non-destructive composition grid that floats <em>above</em> the canvas: it is a
+widget overlay, not a paint layer. It never changes the image, never appears in
+exports (PNG, TIFF, print) and never blocks drawing or panning. Turning it off,
+moving it or deleting it has no effect on the document whatsoever.
+</p>
+
+<h2>Panel</h2>
+<p>
+Enable the panel from Krita's docker list (<b>Settings ▸ Dockers</b> ▸
+<b>Composition Grid</b>; the internal id is <code>composition_grid_docker</code>). One panel per
+window. It
+holds:
+</p>
+<ul>
+<li><b>The grid list</b> — one row per grid of the active document, in the order
+you added them, reading <code>&lt;label&gt; — &lt;grid type&gt;</code>. <b>Click a
+row</b> to select that grid and start editing it <b>on the canvas</b> at once: the
+move/resize handles appear without pressing <b>Edit Grid on Canvas</b>, and every
+control below shows that grid. <b>Double-click a row</b> (or press <b>F2</b>) to
+rename its label in place; the editor holds the label alone, and an empty name
+keeps the old one. The <b>eye</b> at the left of a row shows and hides <b>that</b>
+grid only — toggling a neighbour neither changes your selection nor ends the edit
+session of the grid you are working on, and a hidden grid draws dimmed. Arrow keys
+select a grid without starting a session; a hidden grid is only selected, since
+there is nothing on the canvas to drag. The list keeps a fixed height and scrolls
+when the document has more grids than fit.</li>
+<li><b>Grid type</b> — one of the 12 types: Rule of Thirds, Center Cross,
+Quadrant Grid, Golden Ratio (Phi), Rule of Fifths, Uniform Grid, Symmetry Axes,
+Golden Spiral, Golden Triangles, Diagonal Method, Dynamic Symmetry, Perspective.
+Every type is drawn from the current grid-element bounds, so it adapts
+automatically when you move, resize or rotate the element.</li>
+<li><b>Parameters</b> — the options of the selected type (columns/rows/margin,
+axis counts, spiral origin, root ratio, vanishing-point position, and so on).
+Changing the type keeps the grid element and the style; the parameters are
+<b>replaced by the new type's defaults</b> — remembering separate parameter
+values per type is not part of version 1.</li>
+<li><b>Style</b> — color button (a color dialog), line width
+(0.25&nbsp;px&nbsp;…&nbsp;12&nbsp;px, in screen pixels so it stays constant while
+zooming), opacity slider, and the dash preset: Solid, Dash, Dot, DashDot.</li>
+<li><b>Transform</b> — <b>Reset Transform</b> (back to the default element for the
+current document), a numeric <b>Rotation (deg)</b> field, and the
+<b>Lock Ratio</b> checkbox (on by default).</li>
+<li><b>Visible</b> checkbox and the checkable <b>Edit Grid on Canvas</b> button —
+the button mirrors the session your row click started, and pressing it again (or
+clicking past the markers on the canvas) ends it.</li>
+<li><b>Add grid</b> / <b>Remove grid</b> — the two buttons directly under the
+list. A document can hold any number of
+grids, so adding and removing are two separate buttons. <b>Add grid</b>
+appends a new grid (starting from the last type, parameters and style you used,
+placed as the centered default element) and selects it. <b>Remove grid</b>
+deletes the selected grid and selects the next one, or the previous one, or
+nothing; <b>Remove grid</b> and the editing controls are disabled while no grid
+is selected. Removal is not a hide: <b>Visible</b> means "keep this grid, do not
+draw it", removal means "this document no longer has it".</li>
+</ul>
+<p>
+The panel always edits the <b>selected</b> grid of the active document; the other
+grids of the same document keep their own type, parameters, style, element and
+visibility. Select one in the list at the top of the panel, or use the actions
+below to add, remove and cycle the selected one.
+</p>
+<p>
+Each grid has a <b>label</b>: a new grid gets the next free number
+(<b>1</b>, then <b>2</b>, …), and two grids may share a name — the ids, not the
+names, identify a grid. Double-click the row (or press <b>F2</b>) to rename it;
+the label is saved with the document.
+</p>
+
+<h2>Editing the grid on the canvas</h2>
+<p>
+Every visible grid of the document is drawn, each with its own style, in the order
+you added them. The grid is passive by default: the lines are visible and every
+mouse event goes through to Krita. Click <b>Edit Grid on Canvas</b> (or run the
+<i>Toggle Grid Edit Session</i> action) to make the <b>selected</b> grid
+interactive; only its markers appear (the element frame itself is not drawn):
+</p>
+<ul>
+<li>four <b>corner</b> markers and four <b>edge</b> markers resize the element,
+the dragged corner/edge follows the pointer while the opposite one stays put;</li>
+<li>the <b>move</b> marker (a four-way arrow cross at the element center) drags
+the element — and in an edit session you can grab anywhere <i>inside</i> the grid
+to move it, not just that marker;</li>
+<li>the <b>rotation</b> marker above the top edge rotates it around the element
+center (clockwise on screen is a positive angle, the same as the panel field);</li>
+<li>the <b>vanishing-point</b> marker exists only for the <i>Perspective</i> type
+and drags its vanishing point.</li>
+</ul>
+<p>
+While dragging a corner, holding <b>Shift</b> temporarily inverts the current
+<i>Lock Ratio</i> state. The handles and the mouse belong to the selected grid
+only: a click that lands on another grid, or anywhere else, ends the edit session
+and continues into Krita as usual (a click inside the <em>selected</em> grid is a
+move-drag, not a miss). Click the button again (or
+run the action) to leave the session.
+</p>
+
+<h2>Actions</h2>
+<p>
+Six entries are added to <b>Tools ▸ Scripts</b>:
+</p>
+<ul>
+<li><b>Add Composition Grid</b> — append a new grid to the document and select it.
+This is the only way a grid appears: a new or freshly opened document has none.</li>
+<li><b>Toggle Composition Grid</b> — show or hide the <b>selected</b> grid. With
+no grid in the document it does nothing (it never creates one).</li>
+<li><b>Remove Composition Grid</b> — delete the selected grid; the selection moves
+to the next grid, else to the previous one, else there is no selection.</li>
+<li><b>Toggle Grid Edit Session</b> — enter or leave the interactive session for
+the selected grid.</li>
+<li><b>Reset Grid Transform</b> — return the selected element to the default
+position and size for the current document.</li>
+<li><b>Cycle Grid Type</b> — switch the selected grid to the next type in the
+panel's order (wrapping around).</li>
+</ul>
+<p>
+No keyboard shortcuts are assigned by default; assign them in
+<b>Settings ▸ Configure Krita ▸ Keyboard Shortcuts</b>.
+</p>
+
+<h2>Per-document state and saved settings</h2>
+<p>
+Each open document keeps its <b>own list of grids</b> plus the one grid it has
+selected. A new document — and a document opened from a file that stores no grid
+state — has <b>no grid at all</b>: nothing is drawn and the mouse stays with
+Krita until you add one. When a grid is added, its element is a square centered
+on the page, 80&nbsp;% of the shorter document side, unrotated.
+</p>
+<p>
+<b>The grids of a document are saved inside that document.</b> Once you change
+one — add, remove, rename, type, parameters, style, element, visibility or the
+selection — the whole list is stored in the .kra file itself (as file metadata,
+never as a layer or a pixel), so reopening the file puts every grid back in the
+same order with the same selection, and the file carries them to another
+computer. Opening a file never changes it: the state is only written when you
+actually change a grid, so merely looking at a file does not mark it modified.
+Files saved by the previous version are migrated on open: its single grid comes
+back labelled <b>1</b>, and a file whose grid had been removed opens without one.
+</p>
+<p>
+In addition, the type, parameters and style of the grid you last edited are
+remembered in Krita's configuration (group <code>composition_grid</code>) and are
+used for one thing only: <b>seeding a new grid</b> when you press
+<b>Add grid</b>. They never restore a document's grids. The element position,
+size and rotation are <em>not</em> taken from there — a new grid always gets the
+centered default element of its own document.
+</p>
+
+<h2>Limitations</h2>
+<ul>
+<li>No reordering of the grid list yet: the rows follow the order the grids were
+added (or restored from the file) in, and there are no per-grid parameter
+presets to pick from.</li>
+<li>Deferred: no user presets, no snapping to canvas content and no separate
+parameter memory per grid type.</li>
+<li>Zoom, pan, view rotation and mirroring are tracked through Krita's canvas
+signals; after a display-config or level-of-detail change (which rebuilds the
+canvas widget) the overlay re-attaches when the active view changes.</li>
+<li>In detached/floating-canvas arrangements Krita may not expose a usable canvas
+widget to plugins; the grid then simply stays hidden instead of misbehaving.</li>
+<li>Line width and dash patterns are measured in screen pixels, so they do not
+scale with zoom by design.</li>
+</ul>
+</body>
+</html>

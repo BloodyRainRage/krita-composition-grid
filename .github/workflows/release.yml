@@ -1,0 +1,78 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  QT_QPA_PLATFORM: offscreen
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The manylinux PyQt6 wheel needs these system libraries even when Qt
+      # runs on the offscreen platform.
+      - name: Install Qt runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run tests
+        run: uv run pytest -q
+
+      - name: Check the tag against the plugin version
+        id: version
+        run: uv run python tools/check_release_version.py "$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Build the plugin archive
+        run: uv run python tools/build_plugin_zip.py
+
+      - name: Build the diagnostics dev plugin archive
+        run: uv run python tools/build_plugin_zip.py --plugin grid_diagnostics
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist/composition_grid-${{ steps.version.outputs.version }}.zip
+            dist/grid_diagnostics-${{ steps.version.outputs.version }}.zip
+          generate_release_notes: true
+          body: |
+            **Установка / Install**
+
+            1. Скачайте `composition_grid-${{ steps.version.outputs.version }}.zip` и
+              выберите его в Krita: **Tools ▸ Scripts ▸ Import Python Plugin
+              from File…**
+            2. Включите **Composition Grid** в
+              **Settings ▸ Configure Krita… ▸ Python Plugin Manager**.
+            3. **Перезапустите Krita** и откройте панель
+              **Settings ▸ Dockers ▸ Composition Grid**.
+
+            Download `composition_grid-${{ steps.version.outputs.version }}.zip`,
+            import it via **Tools ▸ Scripts ▸ Import Python Plugin from File…**,
+            enable **Composition Grid** in the Python Plugin Manager, restart
+            Krita.
+
+            ---
+
+            `grid_diagnostics-${{ steps.version.outputs.version }}.zip` —
+            **инструмент разработчика / a developer tool**: это
+            companion-плагин с пунктом меню и докером, которые печатают отчёт
+            самодиагностики («почему сетки не видно»). Для обычной работы он не
+            нужен и в основной плагин не входит.

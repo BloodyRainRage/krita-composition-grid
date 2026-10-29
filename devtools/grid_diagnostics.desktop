@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=Krita/PythonPlugin
+X-KDE-Library=grid_diagnostics
+X-Python-2-Compatible=false
+Name=Composition Grid Diagnostics
+Comment=Read-only self-report of the Composition Grid plugin (developer tool)

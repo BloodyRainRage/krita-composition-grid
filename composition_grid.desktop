@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=Krita/PythonPlugin
+X-KDE-Library=composition_grid
+X-Python-2-Compatible=false
+X-Krita-Manual=composition_grid/Manual.html
+Name=Composition Grid
+Comment=Non-destructive transformable composition grid overlay (12 grid types)
